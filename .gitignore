@@ -1,0 +1,57 @@
+# Unity — patterns use **/ so they work for every project folder in this repo
+
+**/[Ll]ibrary/
+**/[Tt]emp/
+**/[Oo]bj/
+**/[Bb]uild/
+**/[Bb]uilds/
+**/[Ll]ogs/
+**/[Uu]ser[Ss]ettings/
+**/[Mm]emoryCaptures/
+**/[Rr]ecordings/
+
+# Asset meta data should only be ignored when the corresponding asset is also ignored
+!**/[Aa]ssets/**/*.meta
+
+# IDE / generated project files
+.vs/
+.vscode/
+.idea/
+.gradle/
+*.csproj
+*.unityproj
+*.sln
+*.suo
+*.tmp
+*.user
+*.userprefs
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+*.pidb.meta
+*.pdb.meta
+*.mdb.meta
+
+# Crash reports and builds
+sysinfo.txt
+crashlytics-build.properties
+*.apk
+*.aab
+*.unitypackage
+*.app
+
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ML-Agents training output (projects 08+)
+**/results/
+**/summaries/
+
+# Third-party Life patterns (download them yourself, see project READMEs)
+**/StreamingAssets/*.rle

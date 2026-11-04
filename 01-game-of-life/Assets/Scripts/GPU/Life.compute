@@ -1,0 +1,107 @@
+// Conway's Game of Life on the GPU.
+// Every kernel runs once per cell, in parallel, in 8x8 thread groups.
+//
+// State texture channels:
+//   r = alive (1) or dead (0)
+//   g = trail: 1 when the cell just died, fades toward 0
+
+#pragma kernel Init
+#pragma kernel Clear
+#pragma kernel Step
+#pragma kernel Paint
+#pragma kernel Colorize
+
+Texture2D<float4>   Prev;      // state we read from
+RWTexture2D<float4> Next;      // state we write to
+RWTexture2D<float4> Display;   // colored output shown on screen
+
+int   Width;
+int   Height;
+int   Wrap;          // 1 = edges connect (torus), 0 = outside is dead
+float Seed;
+float Fill;          // random fill density, 0..1
+float TrailDecay;
+
+int2  BrushPos;
+int   BrushRadius;
+float BrushValue;    // 1 = draw, 0 = erase
+
+float4 AliveColor;
+float4 DeadColor;
+float4 TrailColor;
+
+bool InBounds(uint3 id) { return (int)id.x < Width && (int)id.y < Height; }
+
+float Hash(uint2 p)
+{
+    return frac(sin(dot(float2(p) + Seed, float2(12.9898, 78.233))) * 43758.5453);
+}
+
+[numthreads(8, 8, 1)]
+void Init(uint3 id : SV_DispatchThreadID)
+{
+    if (!InBounds(id)) return;
+    float a = Hash(id.xy) < Fill ? 1 : 0;
+    Next[id.xy] = float4(a, 0, 0, 1);
+}
+
+[numthreads(8, 8, 1)]
+void Clear(uint3 id : SV_DispatchThreadID)
+{
+    if (!InBounds(id)) return;
+    Next[id.xy] = float4(0, 0, 0, 1);
+}
+
+[numthreads(8, 8, 1)]
+void Step(uint3 id : SV_DispatchThreadID)
+{
+    if (!InBounds(id)) return;
+
+    int n = 0;
+    for (int dx = -1; dx <= 1; dx++)
+    for (int dy = -1; dy <= 1; dy++)
+    {
+        if (dx == 0 && dy == 0) continue;
+
+        int x = (int)id.x + dx;
+        int y = (int)id.y + dy;
+
+        if (Wrap == 1)
+        {
+            x = (x + Width) % Width;
+            y = (y + Height) % Height;
+        }
+        else if (x < 0 || x >= Width || y < 0 || y >= Height)
+        {
+            continue;
+        }
+
+        n += Prev[int2(x, y)].r > 0.5 ? 1 : 0;
+    }
+
+    float4 cur = Prev[id.xy];
+    bool alive = cur.r > 0.5;
+    bool nextAlive = alive ? (n == 2 || n == 3) : (n == 3);
+
+    float trail = (alive && !nextAlive) ? 1.0 : cur.g * TrailDecay;
+    Next[id.xy] = float4(nextAlive ? 1 : 0, trail, 0, 1);
+}
+
+[numthreads(8, 8, 1)]
+void Paint(uint3 id : SV_DispatchThreadID)
+{
+    if (!InBounds(id)) return;
+    int2 d = int2(id.xy) - BrushPos;
+    if (abs(d.x) > BrushRadius || abs(d.y) > BrushRadius) return;
+
+    float4 cur = Next[id.xy];
+    Next[id.xy] = float4(BrushValue, BrushValue > 0.5 ? 0 : cur.g, 0, 1);
+}
+
+[numthreads(8, 8, 1)]
+void Colorize(uint3 id : SV_DispatchThreadID)
+{
+    if (!InBounds(id)) return;
+    float4 s = Prev[id.xy];
+    Display[id.xy] = s.r > 0.5 ? AliveColor : lerp(DeadColor, TrailColor, s.g);
+}
