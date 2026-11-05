@@ -1,27 +1,36 @@
+using System.Collections;
 using System.IO;
 using UnityEngine;
+using UnityEngine.Networking;
 #if ENABLE_INPUT_SYSTEM
 using UnityEngine.InputSystem;
 #endif
 
 /// <summary>
 /// Loads a big RLE pattern (like a digital clock built entirely out of Life) and runs it on the GPU,
-/// with zoom and pan. The pattern file goes in Assets/StreamingAssets/.
+/// with zoom and pan.
 ///
-/// Setup: empty GameObject → add LifeClock → drag LifeLarge.compute into the Shader field.
+/// Setup: empty GameObject → add LifeClock → press Play.
+/// The shader loads itself from Resources, and the clock pattern downloads itself on first run.
 /// </summary>
 public class LifeClock : MonoBehaviour
 {
+    [Tooltip("Optional. If empty, LifeLarge.compute is loaded from a Resources folder.")]
     [SerializeField] ComputeShader shader;
-    [Tooltip("File name inside Assets/StreamingAssets/")]
+
+    [Header("Pattern")]
     [SerializeField] string patternFile = "clockMini.rle";
+    [Tooltip("Where to download the pattern from if it isn't on disk yet.")]
+    [SerializeField] string patternUrl =
+        "https://raw.githubusercontent.com/VladanMajerech/ConwayLifeDigitalClocks/master/clockMini.rle";
     [Tooltip("Empty cells added around the pattern.")]
     [SerializeField] int padding = 64;
 
     [Header("Speed")]
     [Tooltip("clockMini.rle advances one displayed minute every 2880 generations, so 48 gen/s runs it in real time.")]
     [SerializeField] float realTimeGensPerSecond = 48f;
-    [SerializeField] int maxStepsPerFrame = 512;
+    [Tooltip("Hard limit on generations per frame. The real limit adapts to keep the frame rate above ~30 FPS.")]
+    [SerializeField] int maxStepsPerFrame = 256;
 
     [Header("Colors")]
     [SerializeField] Color aliveColor = new Color(0.98f, 0.82f, 0.35f);
@@ -33,9 +42,11 @@ public class LifeClock : MonoBehaviour
     RenderTexture a, b, display;
     int loadK, stepK, viewK;
     int width, height;
+    bool ready;
 
     float gensPerSecond;
     float stepBudget;
+    float adaptiveCap;
     bool running = true;
     long generation;
 
@@ -49,34 +60,66 @@ public class LifeClock : MonoBehaviour
     long statGens;
     float measuredGps;
 
+    string status;     // shown while loading
     string error;
+    Texture2D hudBackground;
 
     // ------------------------------------------------------------------ setup
 
-    void Start()
+    IEnumerator Start()
     {
         gensPerSecond = realTimeGensPerSecond;
+        adaptiveCap = maxStepsPerFrame;
 
-        if (shader == null) { error = "Assign LifeLarge.compute to the Shader field."; return; }
-        if (!SystemInfo.supportsComputeShaders) { error = "This GPU / graphics API doesn't support compute shaders."; return; }
+        if (shader == null) shader = Resources.Load<ComputeShader>("LifeLarge");
+        if (shader == null) { error = "Couldn't find LifeLarge.compute. It should be in a Resources folder, or assigned in the Inspector."; yield break; }
+        if (!SystemInfo.supportsComputeShaders) { error = "This GPU / graphics API doesn't support compute shaders."; yield break; }
 
-        string path = Path.Combine(Application.streamingAssetsPath, patternFile);
-        if (!File.Exists(path))
+        // 1. Find the pattern text: StreamingAssets → downloaded copy → download it now.
+        string text = null;
+        string streaming = Path.Combine(Application.streamingAssetsPath, patternFile);
+        string cached = Path.Combine(Application.persistentDataPath, patternFile);
+
+        if (File.Exists(streaming)) text = File.ReadAllText(streaming);
+        else if (File.Exists(cached)) text = File.ReadAllText(cached);
+        else
         {
-            error = $"Pattern not found:\n{path}\n\nDownload clockMini.rle (see this project's README) and put it in Assets/StreamingAssets/.";
-            return;
+            using (var req = UnityWebRequest.Get(patternUrl))
+            {
+                var op = req.SendWebRequest();
+                while (!op.isDone)
+                {
+                    status = $"Downloading {patternFile}… {req.downloadProgress * 100f:0}%";
+                    yield return null;
+                }
+
+                if (req.result != UnityWebRequest.Result.Success)
+                {
+                    error = $"Couldn't download the pattern ({req.error}).\n\n" +
+                            $"Download it yourself from:\n{patternUrl}\n\nand put it in Assets/StreamingAssets/{patternFile}";
+                    yield break;
+                }
+
+                text = req.downloadHandler.text;
+                try { File.WriteAllText(cached, text); }   // keep it for next time
+                catch (System.Exception e) { Debug.LogWarning("Couldn't cache pattern: " + e.Message); }
+            }
         }
 
+        status = "Parsing pattern…";
+        yield return null;
+
+        // 2. Parse it.
         byte[] cells;
         int srcW, srcH;
         try
         {
-            cells = RleLoader.Parse(File.ReadAllText(path), out srcW, out srcH);
+            cells = RleLoader.Parse(text, out srcW, out srcH);
         }
         catch (System.Exception e)
         {
             error = "Couldn't read the pattern: " + e.Message;
-            return;
+            yield break;
         }
 
         width = srcW + padding * 2;
@@ -86,10 +129,13 @@ public class LifeClock : MonoBehaviour
         if (width > max || height > max)
         {
             error = $"Pattern is {width}×{height}, but this GPU's max texture size is {max}.";
-            return;
+            yield break;
         }
 
-        // Upload the pattern once as an 8-bit texture, then copy it into the simulation texture on the GPU.
+        status = "Uploading to GPU…";
+        yield return null;
+
+        // 3. Upload once as an 8-bit texture, then copy into the simulation texture on the GPU.
         var src = new Texture2D(srcW, srcH, TextureFormat.R8, false) { filterMode = FilterMode.Point };
         src.SetPixelData(cells, 0);
         src.Apply(false, true);   // true = free the CPU copy
@@ -115,6 +161,8 @@ public class LifeClock : MonoBehaviour
 
         FitView();
         lastMouse = MousePosition;
+        status = null;
+        ready = true;
     }
 
     RenderTexture MakeState()
@@ -149,17 +197,22 @@ public class LifeClock : MonoBehaviour
 
     void Update()
     {
-        if (error != null) return;
+        if (!ready) return;
 
         HandleKeys();
         HandleView();
 
         if (running)
         {
+            // If frames get slow, the GPU is the bottleneck: run fewer generations per frame.
+            float dt = Time.unscaledDeltaTime;
+            if (dt > 1f / 30f) adaptiveCap = Mathf.Max(1f, adaptiveCap * 0.8f);
+            else if (dt < 1f / 50f) adaptiveCap = Mathf.Min(maxStepsPerFrame, adaptiveCap * 1.1f + 1f);
+
             stepBudget += gensPerSecond * Time.deltaTime;
-            int steps = Mathf.Min((int)stepBudget, maxStepsPerFrame);
+            int steps = Mathf.Min((int)stepBudget, (int)adaptiveCap);
             stepBudget -= steps;
-            if (stepBudget > maxStepsPerFrame) stepBudget = 0;   // GPU can't keep up: drop the backlog
+            if (stepBudget > adaptiveCap) stepBudget = 0;   // can't keep up: drop the backlog instead of lagging forever
             for (int i = 0; i < steps; i++) Step();
         }
 
@@ -258,29 +311,33 @@ public class LifeClock : MonoBehaviour
         var style = new GUIStyle(GUI.skin.label) { fontSize = 16, wordWrap = true };
         style.normal.textColor = Color.white;
 
-        if (error != null)
+        if (error != null || status != null)
         {
-            GUI.Label(new Rect(20, 20, Screen.width - 40, Screen.height - 40), error, style);
+            GUI.Label(new Rect(20, 20, Screen.width - 40, Screen.height - 40), error ?? status, style);
             return;
         }
+        if (!ready) return;
 
         if (Event.current.type == EventType.Repaint && display != null)
             GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), display);
 
+        if (hudBackground == null)
+        {
+            hudBackground = new Texture2D(1, 1);
+            hudBackground.SetPixel(0, 0, new Color(0, 0, 0, 0.6f));
+            hudBackground.Apply();
+        }
+        GUI.DrawTexture(new Rect(0, 0, Screen.width, 58), hudBackground);
+
         float speed = gensPerSecond / realTimeGensPerSecond;
         double clockMinutes = generation / (realTimeGensPerSecond * 60.0);
         float zoom = 1f / cellsPerPixel;
-
-        var bg = new Texture2D(1, 1);
-        bg.SetPixel(0, 0, new Color(0, 0, 0, 0.6f));
-        bg.Apply();
-        GUI.DrawTexture(new Rect(0, 0, Screen.width, 58), bg);
-        Destroy(bg);
+        string limited = measuredGps < gensPerSecond * 0.9f && running ? " — GPU-limited" : "";
 
         GUILayout.BeginArea(new Rect(12, 6, Screen.width - 24, 60));
         GUILayout.Label(
             $"{(running ? "▶" : "❚❚")}  Gen {generation:N0}  ·  clock time +{(int)clockMinutes} min  ·  " +
-            $"speed ×{speed:0.##} real time ({measuredGps:N0} gen/s)  ·  {width:N0}×{height:N0} cells  ·  " +
+            $"speed ×{speed:0.##} ({measuredGps:N0} gen/s{limited})  ·  {width:N0}×{height:N0} cells  ·  " +
             $"zoom {(zoom >= 1 ? $"{zoom:0.#}×" : $"1/{cellsPerPixel:0.#}")}  ·  FPS {1f / Mathf.Max(Time.smoothDeltaTime, 0.0001f):0}", style);
         GUILayout.Label("Space pause · N step · +/- speed · R real time · F fit · scroll zoom · drag pan", style);
         GUILayout.EndArea();
@@ -291,9 +348,12 @@ public class LifeClock : MonoBehaviour
         if (a != null) a.Release();
         if (b != null) b.Release();
         if (display != null) display.Release();
+        if (hudBackground != null) Destroy(hudBackground);
     }
 
+    // ------------------------------------------------------------------ input bindings
     // Works with both the new Input System (Unity 6 default) and the old Input Manager.
+
 #if ENABLE_INPUT_SYSTEM
     static bool Down(Key k) => Keyboard.current != null && Keyboard.current[k].wasPressedThisFrame;
     bool PressedPlayPause => Down(Key.Space);

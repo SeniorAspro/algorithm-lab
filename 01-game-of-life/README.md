@@ -68,13 +68,17 @@ A 7168 × 7434 Life pattern (~330,000 live cells) that *is* a working digital cl
 - Original idea: a [Code Golf challenge](https://codegolf.stackexchange.com/questions/88783/build-a-digital-clock-in-conways-game-of-life), won by user "dim" ([Hackaday write-up](https://hackaday.com/2017/03/11/a-clock-created-with-conways-life/)).
 - The pattern I run: **clockMini.rle**, a smaller synchronized version by Vladan Majerech — [VladanMajerech/ConwayLifeDigitalClocks](https://github.com/VladanMajerech/ConwayLifeDigitalClocks).
 
+![The clock one displayed minute in, rendered by a port of the View kernel](media/clock-preview.png)
+
 **Measured:** one displayed minute = **2,880 generations**, so **48 generations/second = real time**. It starts at `AM 1:46`.
 
 ### Setup
 
-1. Download `clockMini.rle` from Vladan's repo and put it in `Assets/StreamingAssets/` (create the folder).
-2. New scene **Clock.unity** → Create Empty → add `LifeClock` → drag `LifeLarge.compute` into **Shader**.
-3. Press Play. Needs a GPU with ~250 MB free VRAM.
+1. New scene **Clock.unity** → Create Empty → add `LifeClock`.
+2. Press Play. On the first run it downloads `clockMini.rle` (~800 KB) from Vladan's repo and caches it in Unity's persistent data folder, so later runs start instantly and work offline. The shader loads itself from `Clock/Resources/`.
+3. Needs a GPU with ~250 MB free VRAM.
+
+To use a different pattern, drop any B3/S23 `.rle` into `Assets/StreamingAssets/` and set **Pattern File** in the Inspector. A file there always takes priority over the download.
 
 | Input | Action |
 |-------|--------|
@@ -92,8 +96,13 @@ A 7168 × 7434 Life pattern (~330,000 live cells) that *is* a working digital cl
 - **Memory:** state is `RG16` (2 bytes per cell) instead of `ARGB32` (4 bytes). At 53 million cells that's ~105 MB per texture instead of ~210 MB.
 - **Screen-sized display:** the `View` kernel works per screen pixel, not per cell. When zoomed out, each pixel samples a block of cells and shades by density, so thin glider streams don't flicker out of view.
 - **Edges:** no wrapping; outside the grid counts as dead.
+- **Adaptive speed:** if the frame rate drops below ~30 FPS, it runs fewer generations per frame instead of freezing. The HUD says "GPU-limited" when it can't reach the speed you asked for.
 
-> I didn't find a license on the clock repo, so `clockMini.rle` isn't committed here. `.gitignore` excludes `*.rle` in StreamingAssets.
+### Verified
+
+Before running it in Unity, the shader logic was checked against [lifelib](https://gitlab.com/apgoucher/lifelib) (a reference Life engine): a line-for-line Python port of `RleLoader` + the `Load` and `Step` kernels was run on the full clock for **3,000 generations** (just over one displayed minute) and matched the reference **cell for cell**, with zero mismatches across all 54 million cells. All 8 kernels in both `.compute` files also compile cleanly with glslang's HLSL front end.
+
+> I didn't find a license on the clock repo, so `clockMini.rle` isn't committed here; it's downloaded at runtime instead. `.gitignore` excludes `*.rle` in StreamingAssets.
 
 ## How it's built
 
@@ -111,7 +120,9 @@ A 7168 × 7434 Life pattern (~330,000 live cells) that *is* a working digital cl
 ## Journal
 
 ### 2026-11-04
-Set up the repo. Wrote the CPU version, then the GPU compute shader version.
+Set up the repo. Wrote the CPU version, then the GPU compute shader version — both worked first try.
+
+Found the digital clock built inside Life and wrote a big-pattern viewer for it: RLE loader, 2-byte-per-cell state, zoomable view, auto-download of the pattern, and adaptive speed. Measured the clock: 2,880 generations per displayed minute.
 
 ## What broke (and how I fixed it)
 
