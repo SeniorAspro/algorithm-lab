@@ -6,7 +6,7 @@ A journaled series of algorithm and simulation projects built in Unity, from a f
 
 | # | Project | Core idea | Size | Status |
 |---|---------|-----------|------|--------|
-| 01 | [Game of Life](01-game-of-life/) | Cellular automata | Hours | 🟡 In progress |
+| 01 | Game of Life | Cellular automata | Hours | 🟡 In progress |
 | 02 | Maze + Solver Race | Recursive backtracking, BFS / A* | Hours | ⚪ Planned |
 | 03 | Boids | Flocking, emergent behavior | Hours | ⚪ Planned |
 | 04 | Falling Sand | Cellular automata with materials | A day | ⚪ Planned |
@@ -33,6 +33,8 @@ algorithm-lab/
 ```
 
 Only `Assets/`, `Packages/` and `ProjectSettings/` are committed for each project; Unity regenerates everything else.
+
+I'm writing every project myself to learn. The `reference` branch holds an earlier version written with help, kept only to compare against after finishing my own.
 
 ## Starting a new project
 

@@ -1,1 +1,0 @@
-Optional: put .rle Life patterns here. LifeClock downloads clockMini.rle automatically if it is not here.
